@@ -1,6 +1,3 @@
-# mimosa
-MIMOSA: Multimarker Integration for Morphological Object State Analysis
-
 # Modular Plaque Pipeline — fast preprocessing + morphology + decision tree
 
 ## Pipeline
@@ -23,68 +20,80 @@ Important paths:
 
 Preprocessed images are saved to:
 
+```
 <output_root>/preprocessed_ome_tiffs/MX04/
 <output_root>/preprocessed_ome_tiffs/OC/
+```
 
 The ML-ready feature table is saved to:
 
+```
 <output_root>/morphology_results/combined/decision_tree_features.csv
+```
 
 Decision-tree outputs are saved to:
 
+```
 <output_root>/decision_tree_results/
+```
 
 ## Commands
 
+```bash
 python main.py preprocess
 python main.py ilastik_instructions
 python main.py h5_to_masks
 python main.py morphology
 python main.py decision_tree
+```
 
 After manual ilastik, run everything remaining with:
 
+```bash
 python main.py post_ilastik
+```
 
 If masks already exist and you only want morphology + ML:
 
+```bash
 python main.py analysis
+```
 
 ## Combined central-plaque metrics
 
 The pipeline writes the requested metrics:
 
-- solidity\_oc
-- complexity\_oc
-- major\_axis\_length\_m04
-- solidity\_m04
-- elongation\_oc
-- minor\_axis\_length\_m04
-- surface\_area\_oc
-- area\_voxels\_m04
-- sphericity\_m04
-- volume\_um3\_m04
-- volume\_ratio\_oc\_m04
-- surface\_area\_ratio\_oc\_m04
-- surface\_area\_m04
-- sphericity\_oc
-- minor\_axis\_length\_oc
-- area\_voxels\_oc
-- major\_axis\_length\_oc
-- extent\_oc
-- extent\_m04
-- elongation\_m04
-- complexity\_m04
-- volume\_um3\_oc
-- oc\_halo\_volume\_um3
+- solidity_oc
+- complexity_oc
+- major_axis_length_m04
+- solidity_m04
+- elongation_oc
+- minor_axis_length_m04
+- surface_area_oc
+- area_voxels_m04
+- sphericity_m04
+- volume_um3_m04
+- volume_ratio_oc_m04
+- surface_area_ratio_oc_m04
+- surface_area_m04
+- sphericity_oc
+- minor_axis_length_oc
+- area_voxels_oc
+- major_axis_length_oc
+- extent_oc
+- extent_m04
+- elongation_m04
+- complexity_m04
+- volume_um3_oc
+- oc_halo_volume_um3
 
 It also records `oc_halo_voxels` and `oc_halo_fraction_of_oc` as useful QC/secondary metrics.
 
 Definitions:
 - elongation = major axis / minor axis
 - complexity = volume / surface area
-- volume\_ratio\_oc\_m04 = OC central volume / MX04 central volume
-- surface\_area\_ratio\_oc\_m04 = OC central surface area / MX04 central surface area
+- volume_ratio_oc_m04 = OC central volume / MX04 central volume
+- surface_area_ratio_oc_m04 = OC central surface area / MX04 central surface area
 - OC halo = central OC mask AND NOT central MX04 mask
 
 ## Decision-tree workflow
@@ -110,4 +119,3 @@ Outputs include:
 - `decision_tree.png`
 - `tree_rules.txt`
 - `best_dt_combined.joblib`
-
