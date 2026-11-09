@@ -14,18 +14,18 @@ class Config:
     raw_input_dir: Path = Path(
         "/Users/katherineridley/Projects/PlaqueStack/"
         "ilastik_protocol/plaque_pipeline_modular_fast/"
-        "converted_ometiffs"
+        "transplanted_converted_ometiffs"
     )
 
     output_root: Path = Path(
         "/Users/katherineridley/Projects/PlaqueStack/"
-        "ilastik_protocol/plaque_pipeline_outputs"
+        "ilastik_protocol/transplanted_plaque_pipeline_outputs_corrected_20260922"
     )
 
     genotype_csv: Path = Path(
         "/Users/katherineridley/Projects/PlaqueStack/"
-        "ilastik_protocol/plaque_pipeline_outputs/"
-        "metadata.csv"
+        "ilastik_protocol/plaque_pipeline_modular_fast/"
+        "transplanted_lifs/metadata.csv"
     )
 
     # =========================================================================
@@ -35,8 +35,11 @@ class Config:
     mx04_tag: str = "MX04"
     oc_tag: str = "OC"
 
+    # Biological identities confirmed by the user and original training inputs.
+    # The nominal OME names are misleading; they do not identify the markers.
     mx04_channel_index: int = 0
     oc_channel_index: int = 1
+    expected_ome_channel_names: tuple[str, str] = ("Leica/ALEXA 594", "Leica/DAPI")
 
     mx04_suffix: str = "_MX04.ome.tiff"
     oc_suffix: str = "_OC.ome.tiff"
@@ -66,14 +69,20 @@ class Config:
     # Label 2 = background
     foreground_class_index: int = 0
 
+    ilastik_executable: Path = Path(
+        "/Users/katherineridley/Downloads/ilastik-1.4.2-arm64-OSX.app/Contents/MacOS/ilastik"
+    )
+    ilastik_threads: int = 2
+    ilastik_ram_mb: int = 2048
+
     # =========================================================================
     # PHYSICAL VOXEL SIZE
     # =========================================================================
     #
-    # APP-WT / APP-FIRE dataset
+    # Nominal spacing shared with the previous APP-WT / APP-FIRE dataset
     #
-    # IMPORTANT:
-    # This is NOT the 0.099 µm XY calibration used in the newer 63x dataset.
+    # Transplanted LIF stacks were checked: approximately 0.18 / 0.18 / 1 µm.
+    # The OME spacing must agree within 1%; other acquisitions fail validation.
     # =========================================================================
 
         # =========================================================================
@@ -136,16 +145,82 @@ class Config:
         }
     )
 
-    excluded_images: tuple[str, ...] = (
-        "D_4_M04_OC_L4_P+_221123_1",
-        "D_3_M04_OC_L4_P+_221123_1",
-        "H_1_M04_OC_L1_P+_110124_1",
-        "B_1_M04_OC_L23_P+_021123_2",
-        "C_2_M04_OC_L1_P+_161123_2",
-        "F_3_M04_OC_L1_P+_231123_1",
-        "C_2_M04_OC_L1_P+_161123_1",
-        "C_2_M04_OC_L4_P+_161123_2",
+    # Exclusions are specific to this cohort; historical exclusions are not inherited.
+    excluded_images: tuple[str, ...] = ()
+
+    raw_lif_dir: Path = Path(
+        "/Users/katherineridley/Projects/PlaqueStack/ilastik_protocol/"
+        "plaque_pipeline_modular_fast/transplanted_lifs"
     )
+    bftools_dir: Path = Path("/Users/katherineridley/Downloads/bftools")
+    previous_output_root: Path = Path(
+        "/Users/katherineridley/Projects/PlaqueStack/ilastik_protocol/plaque_pipeline_outputs"
+    )
+    input_suffixes: tuple[str, ...] = (".ome.tiff", ".ome.tif")
+    filename_must_contain: str | None = "_P+_"
+    filename_skip_contains: tuple[str, ...] = ()
+    min_z_planes: int = 2
+    require_two_channels: bool = True
+    # Check OME calibration against the historical nominal spacing before processing.
+    voxel_spacing_relative_tolerance: float = 0.01
+    analysis_genotypes: tuple[str, ...] = (
+        "APP-WT", "APP-FIRE", "APP-FIRE+transplant", "WT",
+    )
+    ttest_comparisons: tuple[tuple[str, str], ...] = (
+        ("APP-WT", "APP-FIRE+transplant"),
+        ("APP-FIRE", "APP-FIRE+transplant"),
+        ("APP-WT", "APP-FIRE"),
+    )
+    include_historical_controls: bool = True
+    current_cohort_name: str = "transplanted"
+    current_comparison_genotypes: tuple[str, ...] = ("APP-FIRE+transplant",)
+    metadata_genotype_map: dict[str, str] = field(default_factory=dict)
+    resample_input_to_nominal: bool = False
+    allowed_input_voxel_xy_um: tuple[float, ...] = ()
+    conversion_compression: str | None = None
+    link_training_subset: bool = False
+    # Union of the historical pipeline and translatecsvs.py exclusion lists.
+    # These apply only to historical tables, never to new image names.
+    historical_excluded_images: tuple[str, ...] = (
+        "D_4_M04_OC_L4_P+_221123_1", "D_3_M04_OC_L4_P+_221123_1",
+        "H_1_M04_OC_L1_P+_110124_1", "B_1_M04_OC_L23_P+_021123_2",
+        "C_2_M04_OC_L1_P+_161123_2", "F_3_M04_OC_L1_P+_231123_1",
+        "C_2_M04_OC_L1_P+_161123_1", "C_2_M04_OC_L4_P+_161123_2",
+        "H_1_M04_OC_L1_P+_110124_2", "C_2_M04_OC_L23_P+_161123_2",
+        "A_4_L1_P+_241023_A_4_M04_OC_P+_DGG_011123_1",
+        "B_4_M04_OC_DGM_P+_131123_1", "B_4_M04_OC_DGG_P+_151123_1",
+        "C_1_M04_OC_L23_P+_151123_2", "H_3_M04_OC_DGM_P+_210224_1",
+    )
+
+    def historical_control_table(self, channel: str) -> Path:
+        source_name = {"MX04": "MX04", "OC": "OC"}[channel]
+        return (self.previous_output_root / "morphology_results" / "combined"
+                / f"overall_{source_name}_central.csv")
+
+    @property
+    def mx04_preprocessed_dir(self) -> Path:
+        return self.preprocessed_mx04_dir
+
+    @property
+    def oc_preprocessed_dir(self) -> Path:
+        return self.preprocessed_oc_dir
+
+    @property
+    def ttest_dir(self) -> Path:
+        return self.morphology_dir / "ttests"
+
+    @property
+    def ilastik_project_dir(self) -> Path:
+        return self.output_root / "ilastik_projects"
+
+    def source_project(self, channel: str) -> Path:
+        # Preserve the original biological marker identities end to end.
+        source_name = {"MX04": "MX04", "OC": "OC"}[channel]
+        return (self.previous_output_root / "ilastik_training_subset" / source_name
+                / f"{source_name}_pixel_classifier.ilp")
+
+    def working_project(self, channel: str) -> Path:
+        return self.ilastik_project_dir / f"{channel}_{self.current_cohort_name}.ilp"
 
     # =========================================================================
     # DECISION TREE

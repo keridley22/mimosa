@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import math
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,29 @@ from skimage.restoration import rolling_ball
 from skimage.transform import resize
 
 from .config import Config, CFG
+from .calibration import validate_ometiff
+from .metadata import load_metadata, resolve_metadata
 from .io_utils import ensure_dir, safe_name, save_ome_zyx, strip_tiff_suffix
+
+
+def match_analysis_spacing(arr_zcyx, spacing, cfg):
+    """Resample only finer XY planes; leave channels and Z planes separate."""
+    needs_resize = not math.isclose(spacing["X"], cfg.voxel_xy_um,
+                                   rel_tol=cfg.voxel_spacing_relative_tolerance)
+    if not needs_resize:
+        return arr_zcyx, False
+    if not cfg.resample_input_to_nominal or spacing["X"] >= cfg.voxel_xy_um:
+        raise ValueError("Only explicitly configured finer-to-nominal resampling is supported")
+    z, c, y, x = arr_zcyx.shape
+    shape = (round(y * spacing["Y"] / cfg.voxel_xy_um), round(x * spacing["X"] / cfg.voxel_xy_um))
+    if min(shape) < 2:
+        raise ValueError("Resampled field is too small")
+    output = np.empty((z, c, *shape), dtype=np.float32)
+    for zi in range(z):
+        for ci in range(c):
+            output[zi, ci] = resize(arr_zcyx[zi, ci], shape, order=1, mode="reflect",
+                                    preserve_range=True, anti_aliasing=True)
+    return output, True
 
 
 def normalise_to_uint16(arr: np.ndarray) -> np.ndarray:
@@ -145,7 +168,7 @@ def read_ometiff_as_zcyx(path: Path) -> tuple[np.ndarray, str]:
 def collect_input_ometiffs(cfg: Config = CFG) -> list[Path]:
     files: list[Path] = []
     for suffix in cfg.input_suffixes:
-        files.extend(cfg.raw_input_dir.glob(f"*{suffix}"))
+        files.extend(p for p in cfg.raw_input_dir.glob(f"*{suffix}") if ".partial." not in p.name)
     return sorted(set(files), key=lambda p: p.name)
 
 
@@ -178,7 +201,15 @@ def copy_training_subset(cfg: Config = CFG) -> None:
         n = min(cfg.n_training_subset, len(src_files))
         idx = np.linspace(0, len(src_files) - 1, n).round().astype(int)
         for i in sorted(set(idx.tolist())):
-            shutil.copy2(src_files[i], dst / src_files[i].name)
+            target = dst / src_files[i].name
+            if cfg.link_training_subset:
+                temporary = target.with_suffix(target.suffix + ".linktmp")
+                if temporary.exists():
+                    temporary.unlink()
+                temporary.hardlink_to(src_files[i])
+                temporary.replace(target)
+            else:
+                shutil.copy2(src_files[i], target)
 
 
 def preprocess_ometiff_folder(cfg: Config = CFG) -> None:
@@ -196,10 +227,14 @@ def preprocess_ometiff_folder(cfg: Config = CFG) -> None:
     print(f"  MX04 -> {cfg.mx04_preprocessed_dir}")
     print(f"  OC   -> {cfg.oc_preprocessed_dir}")
 
+    lookup = load_metadata(cfg)
+    failures = []
     log_rows: list[dict] = []
     skipped_rows: list[dict] = []
 
     for i, img_path in enumerate(image_files, start=1):
+        from .conversion import check_free_space
+        check_free_space(cfg.output_root)
         print(f"\n[{i}/{len(image_files)}] {img_path.name}")
         try:
             arr_zcyx, axes = read_ometiff_as_zcyx(img_path)
@@ -209,6 +244,10 @@ def preprocess_ometiff_folder(cfg: Config = CFG) -> None:
                 skipped_rows.append({"source_file": img_path.name, "reason": reason})
                 continue
 
+            spacing = validate_ometiff(img_path, cfg)
+            original_shape_zcyx = arr_zcyx.shape
+            arr_zcyx, resampled = match_analysis_spacing(arr_zcyx, spacing, cfg)
+            record = resolve_metadata(strip_tiff_suffix(img_path), lookup)
             z, c, y, x = arr_zcyx.shape
             sample_base = safe_name(strip_tiff_suffix(img_path))
             mx04_raw = arr_zcyx[:, cfg.mx04_channel_index, :, :]
@@ -231,9 +270,17 @@ def preprocess_ometiff_folder(cfg: Config = CFG) -> None:
             print(f"  saved OC:   {oc_out}")
 
             log_rows.append({
+                **record,
                 "source_file": img_path.name,
                 "sample_base": sample_base,
                 "original_axes": axes,
+                "original_shape_zcyx": str(original_shape_zcyx),
+                "resampled_xy": resampled,
+                "source_voxel_x_um": spacing["X"],
+                "source_voxel_y_um": spacing["Y"],
+                "source_voxel_z_um": spacing["Z"],
+                "analysis_voxel_xy_um": cfg.voxel_xy_um,
+                "analysis_voxel_z_um": cfg.voxel_z_um,
                 "shape_zcyx": str(arr_zcyx.shape),
                 "Z": z,
                 "C": c,
@@ -249,10 +296,15 @@ def preprocess_ometiff_folder(cfg: Config = CFG) -> None:
             })
         except Exception as e:
             print(f"  ERROR: {e}")
+            failures.append(img_path.name)
             skipped_rows.append({"source_file": img_path.name, "reason": f"ERROR: {e}"})
 
     pd.DataFrame(log_rows).to_csv(cfg.output_root / "preprocessing_log.csv", index=False)
     pd.DataFrame(skipped_rows).to_csv(cfg.output_root / "preprocessing_skipped_files.csv", index=False)
+    if failures:
+        raise RuntimeError(f"Preprocessing failed for {len(failures)} files; see preprocessing_skipped_files.csv")
+    if not log_rows:
+        raise RuntimeError("No images passed preprocessing selection")
     copy_training_subset(cfg)
 
     print("\nPreprocessing complete.")

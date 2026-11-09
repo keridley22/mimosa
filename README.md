@@ -1,121 +1,92 @@
-# Modular Plaque Pipeline — fast preprocessing + morphology + decision tree
+# Six-month young plaque analysis
 
-## Pipeline
+This separate copy uses the corrected transplanted pipeline's original same-marker
+ilastik classifiers, raw channel 0 as MX04 and channel 1 as OC, 0.60 threshold,
+rolling-ball/Gaussian preprocessing, central 40% XY crop, and identical morphology
+cleaning, object thresholds and feature definitions. It does not overwrite the
+historical or transplanted analyses.
 
-1. Converted multichannel OME-TIFF input
-2. Fast rolling-ball preprocessing (background estimated at 0.25x XY resolution)
-3. Manual ilastik Pixel Classification
-4. H5 probabilities -> binary 3D masks
-5. 3D morphology, central plaque extraction, OC halo and combined feature table
-6. Decision-tree grid search, cross-validation and held-out 80/20 evaluation
-
-## Configuration
-
-Edit only `plaque_pipeline/config.py` for normal use.
-
-Important paths:
-- `raw_input_dir`
-- `output_root`
-- `genotype_csv`
-
-Preprocessed images are saved to:
-
-```
-<output_root>/preprocessed_ome_tiffs/MX04/
-<output_root>/preprocessed_ome_tiffs/OC/
-```
-
-The ML-ready feature table is saved to:
-
-```
-<output_root>/morphology_results/combined/decision_tree_features.csv
-```
-
-Decision-tree outputs are saved to:
-
-```
-<output_root>/decision_tree_results/
-```
-
-## Commands
+## Run
 
 ```bash
-python main.py preprocess
-python main.py ilastik_instructions
-python main.py h5_to_masks
-python main.py morphology
-python main.py decision_tree
+cd /Users/katherineridley/Projects/PlaqueStack/ilastik_protocol/plaque_pipeline_young
+bash run.sh run
 ```
 
-After manual ilastik, run everything remaining with:
+This converts the LIF, preprocesses, segments both markers, measures morphology,
+and exports animal-level Welch tests plus OC halo/ratio CSVs, followed by PCA and
+saved historical decision-tree projections. Individual stages
+are available with `bash run.sh --help`. To resume after partial segmentation:
 
 ```bash
-python main.py post_ilastik
+bash run.sh segment
+bash run.sh post_ilastik
 ```
 
-If masks already exist and you only want morphology + ML:
+Configuration: `plaque_pipeline/young_config.py` overrides `Config` defaults.
+Raw LIF: `plaque_pipeline_modular_fast/young_lifs/20250611_04002.lif`.
+Original metadata: `plaque_pipeline_modular_fast/young_lifs/metadata.csv`.
+Converted originals: `plaque_pipeline_modular_fast/young_converted_ometiffs/`.
+Results: `young_plaque_pipeline_outputs_20260929/` under `ilastik_protocol`.
+`input_audit/run_status.json` records stage completion or failure.
 
-```bash
-python main.py analysis
-```
+## Acquisition calibration
 
-## Combined central-plaque metrics
+The LIF has 31 series. The existing P+ selection includes 29 stacks and excludes
+two P- stacks. Nineteen included stacks have 0.180375 um XY pixels; ten have
+0.138750 um pixels. Z spacing is approximately 1.000715 um throughout.
 
-The pipeline writes the requested metrics:
+As selected by the user, the ten finer stacks are downsampled in XY to the prior
+0.18 um analysis grid before preprocessing and classification. Each XY plane is
+resized separately using linear interpolation and anti-aliasing; channels and Z
+planes are never mixed. A 1024 x 1024 fine field becomes 789 x 789 pixels.
+The rounded field width differs by under 0.1%; the field is not expanded to match
+other acquisitions. Source converted images retain the original resolution and
+OME calibration. Source and analysis spacing, shapes, and resampling flags are
+recorded in the inventory and preprocessing logs. Stacks already within the
+existing 1% calibration tolerance retain the same processing as the previous
+analysis. All final measurements use the same nominal 0.18 x 0.18 x 1 um voxels.
+Implementation reference: https://scikit-image.org/docs/stable/api/skimage.transform.html#skimage.transform.resize
 
-- solidity_oc
-- complexity_oc
-- major_axis_length_m04
-- solidity_m04
-- elongation_oc
-- minor_axis_length_m04
-- surface_area_oc
-- area_voxels_m04
-- sphericity_m04
-- volume_um3_m04
-- volume_ratio_oc_m04
-- surface_area_ratio_oc_m04
-- surface_area_m04
-- sphericity_oc
-- minor_axis_length_oc
-- area_voxels_oc
-- major_axis_length_oc
-- extent_oc
-- extent_m04
-- elongation_m04
-- complexity_m04
-- volume_um3_oc
-- oc_halo_volume_um3
+The metadata's APP-WT/APP-FIRE labels map to APP-WT young/APP-FIRE young only when
+reading the young metadata. Historical genotype labels are not relabelled.
+A_4/PF1006, B_1/PF1025, C_2/PF1068 are young APP-WT; A_1/PF1021 and C_4/PF1136
+are young APP-FIRE. C_3/PF1129 has no matching series in this LIF and is recorded
+as missing, never included as a zero-valued animal.
 
-It also records `oc_halo_voxels` and `oc_halo_fraction_of_oc` as useful QC/secondary metrics.
+## Statistics and CSVs
 
-Definitions:
-- elongation = major axis / minor axis
-- complexity = volume / surface area
-- volume_ratio_oc_m04 = OC central volume / MX04 central volume
-- surface_area_ratio_oc_m04 = OC central surface area / MX04 central surface area
-- OC halo = central OC mask AND NOT central MX04 mask
+As requested, historical APP-WT and APP-FIRE controls are compared with the two
+young groups. Existing historical exclusions remain; there are no new image
+exclusions. Animal identifiers are namespaced historical:/young: to prevent
+slide-name collisions. Transplanted animals are not included.
 
-## Decision-tree workflow
+Each group's data are exported as individual plaque values (animal columns),
+animal means (genotype columns), and tidy tables. Six pairwise two-sided Welch
+comparisons use animal means as independent replicates. Benjamini-Hochberg FDR
+covers all features and comparisons within each marker dataset, and separately
+all 24 OC halo/ratio tests (four outcomes x six comparisons).
+The young cohort has three APP-WT and two APP-FIRE animals available; only
+animals with measured values enter a test.
 
-The workflow follows the supplied `supervisedMLmodels.ipynb` logic while preventing test-set leakage:
+OC halo means OC-positive voxels outside MX04; volume ratio and surface ratio
+are OC divided by MX04. Animal means average individual plaque ratios.
+Halo statistics verify saved central/halo masks and measurements before export.
+See `morphology_results/ttests/OC_halo_and_ratios/run_*/README.md` for file details.
+PCA and decision-tree transfer can also be run with `bash run.sh profiles`.
+PCA uses only historical controls to fit the scaler/components, then projects
+both young groups; one plot shows individual plaques and another animal means.
+The saved all-historical and holdout-trained decision trees are applied without
+retraining. Historical holdout precision/recall/F1 remain historical validation
+results; they are not presented as young-cohort accuracy.
 
-1. Restrict to configured training genotypes (default APP-WT and APP-FIRE).
-2. Make a stratified 80/20 train/test split.
-3. Run GridSearchCV only on the 80% training set.
-4. Rank metrics using the tuned decision tree's feature importances; non-zero metrics are reported as selected by the tree.
-5. Cross-validate the selected hyperparameter set on the training data.
-6. Evaluate once on the untouched 20% test set.
-7. Refit the chosen tree on all labelled training data and save it for transfer/prediction experiments.
+## Storage and validation
 
-Outputs include:
-- `grid_search_results.csv`
-- `feature_importance_ranking.csv`
-- `best_model_cross_validation_scores.csv`
-- `held_out_predictions.csv`
-- `classification_report.csv`
-- `confusion_matrix.csv`
-- `metrics.json`
-- `decision_tree.png`
-- `tree_rules.txt`
-- `best_dt_combined.joblib`
+LIF conversion uses lossless LZW compression; saved binary masks use lossless
+zlib compression. The optional training subset uses hard links to preprocessed
+images to avoid storing duplicate pixel data. Working ilastik projects are
+copies; headless inference uses the original classifiers read-only.
+Processing stops before the next conversion/preprocessing/segmentation job if
+less than 2 GiB remains. No original data or prior output is deleted.
+The classifiers have not been retrained on young plaques. Review the saved QC
+images against fluorescence before interpreting cohort differences.

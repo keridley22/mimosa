@@ -26,6 +26,7 @@ from skimage.morphology import (
 
 from .config import Config, CFG
 from .io_utils import ensure_dir
+from .metadata import load_metadata, resolve_metadata
 
 
 # =============================================================================
@@ -1139,6 +1140,9 @@ def save_binary_mask(
             mask.astype(np.uint8)
             * 255
         ),
+        photometric="minisblack",
+        compression="zlib",
+        metadata={"axes": "ZYX"},
     )
 
 
@@ -1314,11 +1318,11 @@ def process_morphology(
             "No matching MX04/OC pairs."
         )
 
-    genotype_lookup = (
-        load_genotype_lookup(
-            cfg
-        )
-    )
+    metadata_lookup = load_metadata(cfg)
+    for name in shared_names:
+        resolve_metadata(name, metadata_lookup)
+    if set(mx04_lookup) != set(oc_lookup):
+        raise ValueError("Unpaired MX04/OC masks; complete both probability exports first")
 
     # =========================================================================
     # OUTPUT COLLECTIONS
@@ -1593,24 +1597,10 @@ def process_morphology(
         # METADATA
         # ---------------------------------------------------------------------
 
-        sample_id = (
-            extract_sample_id(
-                image_name
-            )
-        )
-
-        if sample_id is None:
-
-            genotype = "Unknown"
-
-        else:
-
-            genotype = (
-                genotype_lookup.get(
-                    sample_id,
-                    "Unknown",
-                )
-            )
+        record = resolve_metadata(image_name, metadata_lookup)
+        sample_id = record["sample_id"]
+        animal_id = record["animal_id"]
+        genotype = record["Genotype"]
 
         # ---------------------------------------------------------------------
         # OCCUPANCY QC
@@ -1664,6 +1654,8 @@ def process_morphology(
             "sample_id":
                 sample_id,
 
+            "animal_id": animal_id,
+
             "Genotype":
                 genotype,
 
@@ -1686,6 +1678,8 @@ def process_morphology(
 
             "sample_id":
                 sample_id,
+
+            "animal_id": animal_id,
 
             "Genotype":
                 genotype,
@@ -1767,6 +1761,8 @@ def process_morphology(
 
             "sample_id":
                 sample_id,
+
+            "animal_id": animal_id,
 
             "Genotype":
                 genotype,
@@ -1923,6 +1919,9 @@ def process_morphology(
     # =========================================================================
     # SAVE CSV OUTPUTS
     # =========================================================================
+
+    for row in mx04_object_rows + oc_object_rows:
+        row.update(resolve_metadata(row["image_name"], metadata_lookup))
 
     pd.DataFrame(
         mx04_object_rows

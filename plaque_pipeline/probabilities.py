@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 
 import h5py
@@ -27,27 +28,32 @@ def find_h5_probability_dataset(h5: h5py.File) -> str:
     raise ValueError("No suitable probability dataset found in H5 file")
 
 
-def probability_to_zyx(prob: np.ndarray, foreground_index: int) -> np.ndarray:
+def probability_to_zyx(prob: np.ndarray, foreground_index: int, axes: str | None = None) -> np.ndarray:
     prob = np.asarray(prob)
     print(f"      Raw probability shape: {prob.shape}")
-
-    if prob.ndim == 5:
-        if prob.shape[-1] <= 10:  # TZYXC
-            prob = prob[0, ..., foreground_index]
-        elif prob.shape[0] <= 10:
-            prob = prob[foreground_index]
+    if axes is None:
+        if prob.ndim == 4 and prob.shape[-1] == 2:
+            axes = "zyxc"
+        elif prob.ndim == 5 and prob.shape[0] == 1 and prob.shape[-1] == 2:
+            axes = "tzyxc"
         else:
-            raise ValueError(f"Cannot infer class axis for 5D map: {prob.shape}")
-    elif prob.ndim == 4:
-        if prob.shape[-1] <= 10:  # ZYXC
-            prob = prob[..., foreground_index]
-        elif prob.shape[0] <= 10:  # CZYX
-            prob = prob[foreground_index]
-        else:
-            raise ValueError(f"Cannot infer class axis for 4D map: {prob.shape}")
-    elif prob.ndim != 3:
-        raise ValueError(f"Unsupported probability shape: {prob.shape}")
-
+            raise ValueError("Export both probability classes with axes zyxc, or include HDF5 axistags")
+    axes = axes.lower()
+    if len(axes) != prob.ndim or len(set(axes)) != len(axes):
+        raise ValueError(f"Invalid axes {axes!r} for {prob.shape}")
+    if "t" in axes:
+        i = axes.index("t")
+        if prob.shape[i] != 1:
+            raise ValueError("Multiple timepoints are not supported")
+        prob = np.take(prob, 0, axis=i)
+        axes = axes.replace("t", "")
+    if set(axes) != set("zyxc") or prob.shape[axes.index("c")] != 2:
+        raise ValueError(f"Expected 3D, two-class probabilities, got {axes} {prob.shape}")
+    if not np.isfinite(prob).all() or prob.min() < 0 or prob.max() > 1:
+        raise ValueError("Expected finite probabilities in [0, 1]; export float32 without rescaling")
+    prob = np.take(prob, foreground_index, axis=axes.index("c"))
+    axes = axes.replace("c", "")
+    prob = np.transpose(prob, [axes.index(a) for a in "zyx"])
     print(f"      Foreground ZYX shape: {prob.shape}")
     return prob.astype(np.float32)
 
@@ -97,6 +103,7 @@ def _clean_h5_base(h5_path: Path, channel: str) -> str:
         base,
         flags=re.IGNORECASE,
     )
+    base = re.sub(r"\.ome$", "", base, flags=re.IGNORECASE)
 
     # Remove the existing channel suffix so it is added exactly once later
     if base.lower().endswith(f"_{channel.lower()}"):
@@ -120,9 +127,12 @@ def h5_to_masks(channel: str, cfg: Config = CFG) -> None:
         print(f"\nConverting {channel}: {h5_path.name}")
         with h5py.File(h5_path, "r") as h5:
             dataset_name = find_h5_probability_dataset(h5)
-            prob = h5[dataset_name][()]
+            dataset = h5[dataset_name]
+            prob = dataset[()]
+            tags = dataset.attrs.get("axistags")
+            axes = "".join(a["key"] for a in json.loads(tags)["axes"]) if tags else None
 
-        fg = probability_to_zyx(prob, cfg.foreground_class_index)
+        fg = probability_to_zyx(prob, cfg.foreground_class_index, axes)
         mask = (fg >= cfg.probability_threshold).astype(np.uint8) * 255
         base = _clean_h5_base(h5_path, channel)
         out_path = out_dir / f"{base}{suffix}"
@@ -144,5 +154,25 @@ def h5_to_masks(channel: str, cfg: Config = CFG) -> None:
 
 
 def h5_to_all_masks(cfg: Config = CFG) -> None:
+    # Fail before producing partial results when a batch export is incomplete.
+    from .io_utils import strip_tiff_suffix
+    import tifffile
+    for channel in (cfg.mx04_tag, cfg.oc_tag):
+        expected = {strip_tiff_suffix(p).removesuffix("_" + channel): p
+                    for p in (cfg.preprocessed_dir / channel).glob("*.ome.tif*")}
+        files = list((cfg.probability_dir / channel).glob("*.h5")) + list((cfg.probability_dir / channel).glob("*.hdf5"))
+        actual = {_clean_h5_base(p, channel): p for p in files}
+        if len(actual) != len(files) or not expected or set(actual) != set(expected):
+            raise ValueError(f"Incomplete/duplicate {channel} export. Missing: {sorted(set(expected)-set(actual))}; "
+                             f"unexpected: {sorted(set(actual)-set(expected))}")
+        for name, path in actual.items():
+            with h5py.File(path, "r") as h:
+                d = h[find_h5_probability_dataset(h)]
+                tags = d.attrs.get("axistags")
+                axes = "".join(a["key"] for a in json.loads(tags)["axes"]) if tags else None
+                fg = probability_to_zyx(d[()], cfg.foreground_class_index, axes)
+            with tifffile.TiffFile(expected[name]) as t:
+                if fg.shape != t.series[0].shape:
+                    raise ValueError(f"Probability/input shape mismatch for {name}")
     h5_to_masks(cfg.mx04_tag, cfg)
     h5_to_masks(cfg.oc_tag, cfg)
